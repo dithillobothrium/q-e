@@ -39,18 +39,37 @@ SUBROUTINE force_us( forcenl )
   IMPLICIT NONE
   !
   REAL(DP), INTENT(OUT) :: forcenl(3,nat) ! the nonlocal contribution
+  REAL(DP)              :: forceus(3,nat) ! the nonlocal contribution
   !
   COMPLEX(DP), ALLOCATABLE :: vkb1(:,:)   ! contains g*|beta>
   COMPLEX(DP), ALLOCATABLE :: deff_nc(:,:,:,:)
   REAL(DP), ALLOCATABLE :: deff(:,:,:)
   TYPE(bec_type) :: dbecp                 ! contains <dbeta|psi>
-  INTEGER    :: npw, ik, ipol, ig, jkb
+  INTEGER    :: npw, ik, ipol, ig, jkb, ia
   !
   forcenl(:,:) = 0.D0
+  forceus(:,:) = 0.D0
 
   if (use_sirius) then
     call sirius_get_forces(c_str("usnl"), forcenl(1,1))
     forcenl = forcenl * 2 ! convert to Ha
+
+    call sirius_get_forces(c_str("nl"), forceus(1,1))
+    forceus = forceus * 2
+    write(*,*) "Force NL"
+    do ia=1, nat
+        write (*,*) forceus(1,ia)," ",forceus(2,ia)," ",forceus(3,ia)
+    enddo
+
+    forceus = 0.0
+    call sirius_get_forces(c_str("us"), forceus(1,1))
+    forceus = forceus * 2
+    write(*,*) "Force US"
+    do ia=1, nat
+        write (*,*) forceus(1,ia)," ",forceus(2,ia)," ",forceus(3,ia)
+    enddo
+
+
     return
   endif
 
@@ -119,10 +138,24 @@ SUBROUTINE force_us( forcenl )
   ! ... augmentation part \int V_eff Q dr, the term deriving from the 
   ! ... derivative of Q is added in the routine addusforce
   !
-  CALL addusforce( forcenl )
+  CALL addusforce( forceus )
   !
   ! ... collect contributions across pools from all k-points
   !
+
+  write(*,*) "Force NL"
+  do ia=1, nat
+    write (*,*) forcenl(1,ia)," ",forcenl(2,ia)," ",forcenl(3,ia)
+  enddo
+
+  write(*,*) "Force US"
+  do ia=1, nat
+    write (*,*) forceus(1,ia)," ",forceus(2,ia)," ",forceus(3,ia)
+  enddo
+
+
+  forcenl = forcenl + forceus
+
   CALL mp_sum( forcenl, inter_pool_comm )
   !
   ! ... Since our summation over k points was only on the irreducible 

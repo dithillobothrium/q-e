@@ -26,7 +26,7 @@ SUBROUTINE addusforce (forcenl)
 END SUBROUTINE addusforce
 !
 !----------------------------------------------------------------------
-SUBROUTINE addusforce_g (forcenl)
+SUBROUTINE addusforce_g  (forcenl)
   !----------------------------------------------------------------------
   !
   !   This routine computes the contribution to atomic forces due
