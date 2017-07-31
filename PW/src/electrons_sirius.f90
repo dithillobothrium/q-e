@@ -28,7 +28,7 @@ subroutine electrons_sirius()
   use wavefunctions_module, only : psic
   use fft_interfaces,       only : fwfft, invfft
   use fft_base,             only : dfftp
-  use input_parameters,     only : conv_thr, sirius_cfg
+  use input_parameters,     only : conv_thr, sirius_cfg, sirius_veff, diago_thr_init
   use funct,                only : dft_is_hybrid
   use ldaU,                 only : eth
   use extfield,             only : tefield, etotefield
@@ -49,7 +49,7 @@ subroutine electrons_sirius()
   type (scf_type) :: rhoin ! used to store rho_in of current/next iteration
   real(8) :: dr2, etmp
   logical exst
-  integer ierr, rank, use_sirius_mixer, use_sirius_veff, num_ranks_k, dims(3), ih, jh, ijh, na
+  integer ierr, rank, use_sirius_mixer, num_ranks_k, dims(3), ih, jh, ijh, na
   real(8) vlat(3, 3), vlat_inv(3, 3), v2(3), bg_inv(3, 3), charge
   integer kmesh(3), kshift(3), printout, vt(3)
   integer, external :: global_kpoint_index
@@ -74,22 +74,45 @@ subroutine electrons_sirius()
   end if
 
   use_sirius_mixer = 0
-  use_sirius_veff = 0
   
   ! create Density class
   call sirius_create_density()
    
   ! create Potential class
   call sirius_create_potential()
-
-  ! initialize ground-state class
+  
+  ! get core density as it is not computed by QE when SIRIUS is triggered
+  call get_rhoc_from_sirius
+  
+  ! get local part of pseudopotential
+  call get_vloc_from_sirius
+  
+  ! create ground-state class
   call sirius_create_ground_state(kset_id)
 
   ! generate initial density from atomic densities rho_at
   call sirius_generate_initial_density()
 
+  ! get initial density
+  call get_density_from_sirius
+
   ! generate effective potential
-  call sirius_generate_effective_potential()
+  if (sirius_veff) then
+    call sirius_generate_effective_potential()
+  else
+    ! initialize effective potential from SIRIUS density
+    ! transform initial density to real space
+    do is = 1, nspin_mag
+       psic(:) = 0.d0
+       psic(nl(:)) = rho%of_g(:,is)
+       if (gamma_only) psic(nlm(:)) = conjg(rho%of_g(:,is))
+       call invfft('Dense', psic, dfftp)
+       rho%of_r(:,is) = dble(psic(:))
+    end do
+    call v_of_rho(rho, rho_core, rhog_core, ehart, etxc, vtxc, eth, etotefield, charge, v)
+    call put_potential_to_sirius
+    call sirius_generate_d_operator_matrix
+  endif
 
   ! initialize subspace before calling "sirius_find_eigen_states"
   call sirius_initialize_subspace(kset_id)
@@ -103,7 +126,6 @@ subroutine electrons_sirius()
   !CALL flush_unit( stdout )
 
   call create_scf_type(rhoin)
-  call get_density_from_sirius
   if (okpaw) then
     call PAW_atomic_becsum()
   endif
@@ -117,32 +139,31 @@ subroutine electrons_sirius()
   allocate(deeq_tmp(nhm, nhm))
   allocate(vxcg(ngm))
 
-  call get_rhoc_from_sirius
-  call get_vloc_from_sirius
-
   if (nspin.gt.1.and.nspin_mag.eq.1) then
     write(*,*)'this case has to be checked'
     stop
   endif
   
   call sirius_start_timer(c_str("qe|electrons|scf"))
+  
+  if (diago_thr_init.eq.0.d0) then
+    ethr = 1d-3
+  else
+    ethr = diago_thr_init
+  endif
 
   do iter = 1, niter
+
     write(stdout, 9010)iter, ecutwfc, mixing_beta
 
     if (iter.gt.1) then
-       !
-       if (iter.eq.2) then
-          ethr = 1.D-2
-       else
-          ethr = min(ethr, 0.1d0 * dr2 / max(1.d0, nelec))
-          ! ... do not allow convergence threshold to become too small:
-          ! ... iterative diagonalization may become unstable
-          ethr = max(ethr, 1.d-13)
-       endif
-       !
-       call sirius_set_iterative_solver_tolerance(ethr)
+       ethr = min(ethr, 0.1d0 * dr2 / max(1.d0, nelec))
+       ! ... do not allow convergence threshold to become too small:
+       ! ... iterative diagonalization may become unstable
+       ethr = max(ethr, 1.d-13)
     end if
+    call sirius_set_iterative_solver_tolerance(ethr)
+    write(stdout, '( 5X,"ethr = ", 1PE9.2)' )ethr
 
     ! solve H\spi = E\psi
     call sirius_find_eigen_states(kset_id, precompute=1)
@@ -151,6 +172,8 @@ subroutine electrons_sirius()
 !     CALL sirius_find_band_occupancies(kset_id)
 !     CALL sirius_get_energy_fermi(kset_id, ef)
 !     ef = ef * 2.d0
+    
+    ! get band energies
     call get_band_energies_from_sirius
 
     ! compute band weights
@@ -184,13 +207,12 @@ subroutine electrons_sirius()
       call mp_bcast(conv_elec, root_pool, inter_pool_comm)
       ! set new (mixed) rho(G)
       call put_density_to_sirius
-      ! set new (mixed) density matrix
     endif
     call sirius_stop_timer(c_str("qe|mix"))
     
     ! generate effective potential
     call sirius_start_timer(c_str("qe|veff"))
-    if (use_sirius_veff.eq.1) then
+    if (sirius_veff) then
       call sirius_generate_effective_potential()
       call sirius_get_energy_exc(etxc)
       etxc = etxc * 2.d0
@@ -274,7 +296,7 @@ subroutine electrons_sirius()
     !!== IF ( lda_plus_u ) hwf_energy = hwf_energy + eth
 
     if (conv_elec) write(stdout, 9101)
-
+    
     if (conv_elec.or.mod(iter, iprint).eq.0) then
        write(stdout, 9101)
        !IF ( lda_plus_U .AND. iverbosity == 0 ) THEN
@@ -285,9 +307,6 @@ subroutine electrons_sirius()
        !   ENDIF
        !ENDIF
 
-       ! get band energies
-       call get_band_energies_from_sirius
-
        call print_ks_energies()
     endif
 
@@ -295,14 +314,13 @@ subroutine electrons_sirius()
     etot = eband + (etxc - etxcc) + ewld + ehart + deband + demet !+ descf
 
     if (okpaw) then
-      if (use_sirius_veff.eq.1) then
+      if (sirius_veff) then
         call sirius_get_paw_total_energy(epaw)
         call sirius_get_paw_one_elec_energy(paw_one_elec_energy)
         epaw = epaw * 2.0;
         paw_one_elec_energy = paw_one_elec_energy * 2.0;
         etot = etot - paw_one_elec_energy + epaw
-      endif
-      if (use_sirius_veff.eq.0) then
+      else
         etot = etot + epaw - sum(ddd_paw(:, :, :) * rho%bec(:, :, :))
       endif
     endif
@@ -429,8 +447,8 @@ subroutine electrons_sirius()
     call sirius_get_q_operator_matrix(iat, qq(1, 1, iat), nhm)
   enddo
 
-  ! TODO: not clear is rho(r) is needed
-  if (use_sirius_veff.eq.1) then
+  ! rho(r) is needed in stres_gradcorr
+  if (sirius_veff) then
     ! transform density to real-space  
     do is = 1, nspin_mag
        psic(:) = ( 0.d0, 0.d0 )
@@ -440,6 +458,15 @@ subroutine electrons_sirius()
        rho%of_r(:,is) = psic(:)
        !
     end do
+    ! calculate potential (Vha + Vxc)
+    call v_of_rho(rho, rho_core, rhog_core, ehart, etxc, vtxc, eth, etotefield, charge, v)
+    ! calculate PAW potential
+    if (okpaw) then
+      call PAW_potential(rho%bec, ddd_PAW, epaw, etot_cmp_paw)
+    endif
+    call put_potential_to_sirius
+    !!==! update D-operator matrix
+    !!==!call sirius_generate_d_operator_matrix()
   endif
   
   call get_band_energies_from_sirius
@@ -486,6 +513,8 @@ subroutine electrons_sirius()
           !
           write( stdout, 9060 ) &
                ( eband + deband ), ehart, ( etxc - etxcc ), ewld
+          write( stdout, 9200 ) eband
+          write( stdout, 9202 ) deband
           !
           if ( llondon ) write ( stdout , 9074 ) elondon
           if ( lxdm )    write ( stdout , 9075 ) exdm
@@ -494,7 +523,17 @@ subroutine electrons_sirius()
        !!   IF ( tefield )            WRITE( stdout, 9061 ) etotefield
        !!   IF ( lda_plus_u )         WRITE( stdout, 9065 ) eth
        !!   IF ( ABS (descf) > eps8 ) WRITE( stdout, 9069 ) descf
-          if ( okpaw )              write( stdout, 9067 ) epaw
+          if (okpaw) then
+            write(stdout, 9067) epaw
+            if(iverbosity>0)then
+                write(stdout, 9068) sum(etot_cmp_paw(:,1,1)), &
+                                    sum(etot_cmp_paw(:,1,2)), &
+                                    sum(etot_cmp_paw(:,2,1)), &
+                                    sum(etot_cmp_paw(:,2,2)), &
+                                    sum(etot_cmp_paw(:,1,1))+sum(etot_cmp_paw(:,1,2))+ehart, &
+                                    sum(etot_cmp_paw(:,2,1))+sum(etot_cmp_paw(:,2,2))+etxc-etxcc
+            endif
+          endif
        !!   !
        !!   ! ... With Fermi-Dirac population factor, etot is the electronic
        !!   ! ... free energy F = E - TS , demet is the -TS contribution
@@ -549,9 +588,17 @@ subroutine electrons_sirius()
             /'     hartree contribution      =',F17.8,' Ry' &
             /'     xc contribution           =',F17.8,' Ry' &
             /'     ewald contribution        =',F17.8,' Ry' )
+9200 format( '     band sum                  =',F17.8,' Ry' )
+9202 format( '     deband                    =',F17.8,' Ry' )
 9061 format( '     electric field correction =',F17.8,' Ry' )
 9065 format( '     Hubbard energy            =',F17.8,' Ry' )
 9067 format( '     one-center paw contrib.   =',F17.8,' Ry' )
+9068 FORMAT( '      -> PAW hartree energy AE =',F17.8,' Ry' &
+            /'      -> PAW hartree energy PS =',F17.8,' Ry' &
+            /'      -> PAW xc energy AE      =',F17.8,' Ry' &
+            /'      -> PAW xc energy PS      =',F17.8,' Ry' &
+            /'      -> total E_H with PAW    =',F17.8,' Ry'& 
+            /'      -> total E_XC with PAW   =',F17.8,' Ry' )
 9069 format( '     scf correction            =',F17.8,' Ry' )
 9070 format( '     smearing contrib. (-TS)   =',F17.8,' Ry' )
 9071 format( '     Magnetic field            =',3F12.7,' Ry' )

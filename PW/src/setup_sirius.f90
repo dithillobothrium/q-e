@@ -19,6 +19,7 @@ subroutine setup_sirius()
   use noncollin_module, only : noncolin, npol, angle1, angle2
   use lsda_mod, only : lsda, nspin, starting_magnetization
   use cell_base, only : omega
+  use symm_base, only : nosym
   implicit none
   !
   integer :: dims(3), i, ia, iat, rank, ierr, ijv, ik, li, lj, mb, nb, j, l,&
@@ -32,9 +33,9 @@ subroutine setup_sirius()
   ! set up a type of calculation
   call sirius_set_esm_type(c_str("pseudopotential"))
 
-  if (omega.lt.250) then
-    call sirius_set_processing_unit(c_str("cpu"))
-  endif
+  !if (omega.lt.250) then
+  !  call sirius_set_processing_unit(c_str("cpu"))
+  !endif
 
   if (get_meta().ne.0.or.get_inlc().ne.0) then
     write(*,*)get_igcx()
@@ -179,55 +180,19 @@ subroutine setup_sirius()
       end do
     end do
     ! sed d^{ion}_{i,j}
-    call sirius_set_atom_type_dion(c_str(atm(iat)), upf(iat)%nbeta, dion(1,1))
+    call sirius_set_atom_type_dion(c_str(atm(iat)), upf(iat)%nbeta, dion(1, 1))
     deallocate(dion)
 
+    ! set radial function of augmentation charge
     if (upf(iat)%tvanp) then
-      allocate(qij(upf(iat)%mesh, upf(iat)%nbeta*(upf(iat)%nbeta+1)/2, 0:2*upf(iat)%lmax))
-      qij = 0
-      ! set radial function of augmentation charge
-      if (upf(iat)%q_with_l) then
-        if (2 * upf(iat)%lmax .ne. upf(iat)%nqlc - 1) then
-          write(*,*)
-          write(*,'("Mismatch between lmax_beta and lmax_qij for atom type", I2)')iat
-          write(*,'("lmax =", I2)')upf(iat)%lmax
-          write(*,'("nqlc =", I2, ", but expecting ", I2)')upf(iat)%nqlc, 2 * upf(iat)%lmax + 1
-        endif
-        do l = 0, 2*upf(iat)%lmax !upf(iat)%nqlc-1
-          do nb = 1, upf(iat)%nbeta
-            do mb = nb, upf(iat)%nbeta
-              ijv = mb*(mb-1)/2 + nb
-              do ir = 1, upf(iat)%kkbeta
-                qij(ir, ijv, l) = upf(iat)%qfuncl(ir, ijv, l)
-              enddo
-            enddo
-          enddo
-        enddo
-      else
-        do l = 0, upf(iat)%nqlc-1
-          do nb = 1, upf(iat)%nbeta
-            li = upf(iat)%lll(nb)
-            do mb = nb, upf(iat)%nbeta
-              lj = upf(iat)%lll(nb)
-              if ((l >= abs(li-lj) .and. l <= (li+lj) .and. mod(l+li+lj, 2) == 0)) then
-                ijv = mb*(mb-1)/2 + nb
-                do ir = 1, upf(iat)%kkbeta
-                  if (rgrid(iat)%r(ir) >= upf(iat)%rinner(l+1)) then
-                    qij(ir, ijv, l) = upf(iat)%qfunc(ir, ijv)
-                  else
-                    ilast = ir
-                  endif
-                enddo
-                if (upf(iat)%rinner(l+1) > 0.0) then
-                  call setqfnew(upf(iat)%nqf, upf(iat)%qfcoef(1, l+1, nb, mb), ilast, rgrid(iat)%r, l, 2, qij(1, ijv, l))
-                endif
-              endif
-            enddo ! mb
-          enddo ! nb
-        enddo
+      if (2 * upf(iat)%lmax .ne. upf(iat)%nqlc - 1) then
+        write(*,*)
+        write(*,'("Mismatch between lmax_beta and lmax_qij for atom type", I2)')iat
+        write(*,'("lmax =", I2)')upf(iat)%lmax
+        write(*,'("nqlc =", I2, ", but expecting ", I2)')upf(iat)%nqlc, 2 * upf(iat)%lmax + 1
+        stop
       endif
-      call sirius_set_atom_type_q_rf(c_str(atm(iat)), qij(1, 1, 0), upf(iat)%lmax)
-      deallocate(qij)
+      call sirius_set_atom_type_q_rf(c_str(atm(iat)), upf(iat)%qfuncl(1, 1, 0), upf(iat)%lmax)
     endif
 
     if (upf(iat)%tpawp) then
@@ -277,6 +242,10 @@ subroutine setup_sirius()
 
   ! initialize global variables/indices/arrays/etc. of the simulation
   call sirius_initialize_simulation_context()
+
+  if (nosym) then
+    call sirius_set_use_symmetry(0)
+  endif
 
   ! get number of g-vectors of the dense fft grid
   call sirius_get_num_gvec(num_gvec)
