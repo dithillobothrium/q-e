@@ -7,7 +7,7 @@
 !
 !----------------------------------------------------------------------------
 ! TB
-! included monopole related forces
+! included gate related forces
 !----------------------------------------------------------------------------
 !
 !----------------------------------------------------------------------------
@@ -37,10 +37,10 @@ SUBROUTINE forces()
   USE symme,         ONLY : symvector
   USE vlocal,        ONLY : strf, vloc
   USE force_mod,     ONLY : force, lforce, sumfor
-  USE scf,           ONLY : rho
+  USE scf,           ONLY : rho, vnew
   USE ions_base,     ONLY : if_pos
   USE ldaU,          ONLY : lda_plus_u, U_projection
-  USE extfield,      ONLY : tefield, forcefield, monopole, forcemono, relaxz
+  USE extfield,      ONLY : tefield, forcefield, gate, forcegate, relaxz
   USE control_flags, ONLY : gamma_only, remove_rigid_rot, textfor, &
                             iverbosity, llondon, lxdm, ts_vdw
   USE plugin_flags
@@ -102,22 +102,18 @@ SUBROUTINE forces()
   if (use_sirius) then
     ! recalculate the exchange-correlation potential
     !
-    allocate ( vxc(dfftp%nnr,nspin) )
+    allocate (vxc(dfftp%nnr, nspin))
     !
     call v_xc (rho, rho_core, rhog_core, etxc, vtxc, vxc)
     !
     psic=(0.0_DP,0.0_DP)
     if (nspin == 1 .or. nspin == 4) then
-       do ir = 1, dfftp%nnr
-          psic (ir) = vxc (ir, 1)
-       enddo
+       psic(:) = vxc(:, 1)
     else
-       do ir = 1, dfftp%nnr
-          psic (ir) = 0.5d0 * (vxc (ir, 1) + vxc (ir, 2) )
-       enddo
+       psic(:) = (vxc(:, 1) + vxc(:, 2)) * 0.5d0
     endif
-    deallocate (vxc)
-    CALL fwfft ('Dense', psic, dfftp)
+    deallocate(vxc)
+    call fwfft('Dense', psic, dfftp)
     !
     ! psic contains now Vxc(G)
     !
@@ -126,8 +122,27 @@ SUBROUTINE forces()
        vxc_g(ig) = psic(nl(ig)) * 0.5d0 ! convert to Ha
     enddo
     ! set XC potential
-    call sirius_set_pw_coeffs(c_str("vxc"),vxc_g(1), ngm, mill(1, 1), intra_bgrp_comm)
+    call sirius_set_pw_coeffs(c_str("vxc"), vxc_g(1), ngm, mill(1, 1), intra_bgrp_comm)
+    
+    !
+    ! vnew is V_out - V_in, psic is the temp space
+    !
+    if (nspin == 1 .or. nspin == 4) then
+       psic(:) = vnew%of_r(:, 1)
+    else
+       psic(:) = (vnew%of_r(:, 1) + vnew%of_r(:, 2)) * 0.5d0
+    endif
+    call fwfft ('Dense', psic, dfftp)
+
+    do ig = 1, ngm
+       vxc_g(ig) = psic(nl(ig)) * 0.5d0 ! convert to Ha
+    enddo
+    ! set XC potential
+    call sirius_set_pw_coeffs(c_str("dveff"), vxc_g(1), ngm, mill(1, 1), intra_bgrp_comm)
+
     deallocate(vxc_g)
+
+    ! calculate all the contributions to forces
     call sirius_calculate_forces(kset_id)
   endif
 
@@ -140,18 +155,13 @@ SUBROUTINE forces()
   !
 
   ! print local forces
-
-
-
   CALL force_lc( nat, tau, ityp, alat, omega, ngm, ngl, igtongl, &
                  g, rho%of_r, nl, nspin, gstart, gamma_only, vloc, &
                  forcelc )
   !
   ! ... The NLCC contribution
   !
-  call sirius_start_timer(c_str("qe|force_cc"))
   CALL force_cc( forcecc )
-  call sirius_stop_timer(c_str("qe|force_cc"))
   !
   ! ... The Hubbard contribution
   !     (included by force_us if using beta as local projectors)
@@ -188,9 +198,7 @@ SUBROUTINE forces()
   !
   ! ... The SCF contribution
   !
-  IF (.not. use_sirius) THEN
-    CALL force_corr( forcescc )
-  endif
+  CALL force_corr( forcescc )
 
   !
   IF (do_comp_mt .and. .not. use_sirius ) THEN
@@ -246,7 +254,7 @@ SUBROUTINE forces()
         ! factor 2 converts from Ha to Ry a.u.
         IF ( ts_vdw )  force(ipol,na) = force(ipol,na) + 2.0_dp*FtsvdW(ipol,na)
         IF ( tefield ) force(ipol,na) = force(ipol,na) + forcefield(ipol,na)
-        IF ( monopole ) force(ipol,na) = force(ipol,na) + forcemono(ipol,na) ! TB
+        IF ( gate ) force(ipol,na) = force(ipol,na) + forcegate(ipol,na) ! TB
         IF (lelfield)  force(ipol,na) = force(ipol,na) + forces_bp_efield(ipol,na)
         IF (do_comp_mt)force(ipol,na) = force(ipol,na) + force_mt(ipol,na) 
 
@@ -255,9 +263,9 @@ SUBROUTINE forces()
      END DO
      !
      !TB
-     IF ((monopole.and.relaxz).AND.(ipol==3)) WRITE( stdout, '("Total force in z direction = 0 disabled")')
+     IF ((gate.and.relaxz).AND.(ipol==3)) WRITE( stdout, '("Total force in z direction = 0 disabled")')
      !
-     IF ( (do_comp_esm .and. ( esm_bc .ne. 'pbc' )).or.(monopole.and.relaxz) ) THEN
+     IF ( (do_comp_esm .and. ( esm_bc .ne. 'pbc' )).or.(gate.and.relaxz) ) THEN
         !
         ! ... impose total force along xy = 0
         !
@@ -357,11 +365,11 @@ SUBROUTINE forces()
         END DO
      END IF
      !
-     ! TB monopole forces
-     IF ( monopole) THEN
-        WRITE( stdout, '(/,5x,"Monopole contribution to forces:")')
+     ! TB gate forces
+     IF ( gate ) THEN
+        WRITE( stdout, '(/,5x,"Gate contribution to forces:")')
         DO na = 1, nat
-           WRITE( stdout, 9035) na, ityp(na), (forcemono(ipol,na), ipol = 1, 3)
+           WRITE( stdout, 9035) na, ityp(na), (forcegate(ipol,na), ipol = 1, 3)
         END DO
      END IF
      !

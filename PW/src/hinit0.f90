@@ -21,7 +21,7 @@ SUBROUTINE hinit0()
   USE klist,        ONLY : init_igk
   USE wvfct,        ONLY : npwx
   USE fft_base,     ONLY : dfftp
-  USE gvect,        ONLY : ngm, ig_l2g, g, eigts1, eigts2, eigts3
+  USE gvect,        ONLY : ngm, g, eigts1, eigts2, eigts3
   USE vlocal,       ONLY : strf
   USE gvecw,        ONLY : gcutw
   USE realus,       ONLY : generate_qpointlist,betapointlist,init_realspace_vars,real_space
@@ -50,9 +50,7 @@ SUBROUTINE hinit0()
   if (tq_smoothing) CALL init_us_0()
 
   call sirius_start_timer(c_str("qe|init_run|hinit0|init_us_1"))
-  !if (.not.use_sirius) then
-    CALL init_us_1()
-  !endif
+  CALL init_us_1()
   call sirius_stop_timer(c_str("qe|init_run|hinit0|init_us_1"))
 
   IF ( lda_plus_U .AND. ( U_projection == 'pseudo' ) ) CALL init_q_aeps()
@@ -117,6 +115,7 @@ SUBROUTINE hinit0()
   call sirius_stop_timer(c_str("qe|init_run|hinit0|set_rhoc"))
   !
   IF ( tqr ) CALL generate_qpointlist()
+  
   IF (real_space ) then
    call betapointlist()
    call init_realspace_vars()

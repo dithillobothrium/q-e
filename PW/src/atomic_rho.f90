@@ -26,13 +26,14 @@ subroutine atomic_rho (rhoa, nspina)
   !
   !
   USE kinds,                ONLY : DP
+  USE constants,            ONLY : eps8
   USE io_global,            ONLY : stdout
   USE atom,                 ONLY : rgrid, msh
   USE ions_base,            ONLY : ntyp => nsp
   USE cell_base,            ONLY : tpiba, omega
   USE gvect,                ONLY : ngm, ngl, gstart, nl, nlm, gl, igtongl
   USE lsda_mod,             ONLY : starting_magnetization, lsda
-  USE vlocal,               ONLY : strf
+  USE vlocal,               ONLY : starting_charge, strf
   USE control_flags,        ONLY : gamma_only
   USE wavefunctions_module, ONLY : psic
   USE noncollin_module,     ONLY : angle1, angle2
@@ -41,6 +42,8 @@ subroutine atomic_rho (rhoa, nspina)
   USE mp,                   ONLY : mp_sum
   USE fft_base,             ONLY : dfftp
   USE fft_interfaces,       ONLY : invfft
+  USE input_parameters,     ONLY : sirius_spline_integration
+
 
   !
   implicit none
@@ -52,7 +55,7 @@ subroutine atomic_rho (rhoa, nspina)
   !
   ! local variables
   !
-  real(DP) :: rhoneg, rhoima, gx
+  real(DP) :: rhoneg, rhoima, rhoscale, gx
   real(DP), allocatable :: rhocgnt (:), aux (:)
   complex(DP), allocatable :: rhocg (:,:)
   integer :: ir, is, ig, igl, nt, ndm
@@ -77,7 +80,10 @@ subroutine atomic_rho (rhoa, nspina)
         do ir = 1, msh (nt)
            aux (ir) = upf(nt)%rho_at (ir)
         enddo
-        call simpson (msh (nt), aux, rgrid(nt)%rab, rhocgnt (1) )
+        call simpson (msh (nt), aux, rgrid(nt)%rab, rhocgnt (1))
+        if (sirius_spline_integration) then
+          call sirius_integrate(0, msh(nt), rgrid(nt)%r(1), aux(1), rhocgnt(1))
+        endif
      endif
      !
      ! Here we compute the G<>0 term
@@ -93,23 +99,32 @@ subroutine atomic_rho (rhoa, nspina)
            endif
         enddo
         call simpson (msh (nt), aux, rgrid(nt)%rab, rhocgnt (igl) )
+        if (sirius_spline_integration) then
+          call sirius_integrate(0, msh(nt), rgrid(nt)%r(1), aux(1), rhocgnt(igl))
+        endif
      enddo
      !
      ! we compute the 3D atomic charge in reciprocal space
      !
+     if (upf(nt)%zp > eps8) then
+        rhoscale = MAX(0.d0, upf(nt)%zp - starting_charge(nt)) / upf(nt)%zp
+     else
+        rhoscale = 1.d0
+     endif
+     !
      if (nspina == 1) then
         do ig = 1, ngm
            rhocg(ig,1) = rhocg(ig,1) + &
-                         strf(ig,nt) * rhocgnt(igtongl(ig)) / omega
+                         strf(ig,nt) * rhoscale * rhocgnt(igtongl(ig)) / omega
         enddo
      else if (nspina == 2) then
         do ig = 1, ngm
            rhocg(ig,1) = rhocg(ig,1) + &
                          0.5d0 * ( 1.d0 + starting_magnetization(nt) ) * &
-                         strf(ig,nt) * rhocgnt(igtongl(ig)) / omega
+                         strf(ig,nt) * rhoscale * rhocgnt(igtongl(ig)) / omega
            rhocg(ig,2) = rhocg(ig,2) + &
                          0.5d0 * ( 1.d0 - starting_magnetization(nt) ) * &
-                         strf(ig,nt) * rhocgnt(igtongl(ig)) / omega
+                         strf(ig,nt) * rhoscale * rhocgnt(igtongl(ig)) / omega
         enddo
      else
 !
@@ -117,22 +132,22 @@ subroutine atomic_rho (rhoa, nspina)
 !
         do ig = 1,ngm
            rhocg(ig,1) = rhocg(ig,1) + &
-                strf(ig,nt)*rhocgnt(igtongl(ig))/omega
+                strf(ig,nt)*rhoscale*rhocgnt(igtongl(ig))/omega
 
            ! Now, the rotated value for the magnetization
 
            rhocg(ig,2) = rhocg(ig,2) + &
                 starting_magnetization(nt)* &
                 sin(angle1(nt))*cos(angle2(nt))* &
-                strf(ig,nt)*rhocgnt(igtongl(ig))/omega
+                strf(ig,nt)*rhoscale*rhocgnt(igtongl(ig))/omega
            rhocg(ig,3) = rhocg(ig,3) + &
                 starting_magnetization(nt)* &
                 sin(angle1(nt))*sin(angle2(nt))* &
-                strf(ig,nt)*rhocgnt(igtongl(ig))/omega
+                strf(ig,nt)*rhoscale*rhocgnt(igtongl(ig))/omega
            rhocg(ig,4) = rhocg(ig,4) + &
                 starting_magnetization(nt)* &
                 cos(angle1(nt))* &
-                strf(ig,nt)*rhocgnt(igtongl(ig))/omega
+                strf(ig,nt)*rhoscale*rhocgnt(igtongl(ig))/omega
         end do
      endif
   enddo

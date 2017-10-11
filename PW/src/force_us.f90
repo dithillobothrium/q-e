@@ -18,7 +18,7 @@ SUBROUTINE force_us( forcenl )
   USE ions_base,            ONLY : nat, ntyp => nsp, ityp
   USE klist,                ONLY : nks, xk, ngk, igk_k
   USE gvect,                ONLY : g
-  USE uspp,                 ONLY : nkb, vkb, qq, deeq, qq_so, deeq_nc, indv_ijkb0
+  USE uspp,                 ONLY : nkb, vkb, qq_at, deeq, qq_so, deeq_nc, indv_ijkb0
   USE uspp_param,           ONLY : upf, nh, newpseudo, nhm
   USE wvfct,                ONLY : nbnd, npwx, wg, et
   USE lsda_mod,             ONLY : lsda, current_spin, isk, nspin
@@ -39,37 +39,19 @@ SUBROUTINE force_us( forcenl )
   IMPLICIT NONE
   !
   REAL(DP), INTENT(OUT) :: forcenl(3,nat) ! the nonlocal contribution
-  REAL(DP)              :: forceus(3,nat) ! the nonlocal contribution
   !
   COMPLEX(DP), ALLOCATABLE :: vkb1(:,:)   ! contains g*|beta>
   COMPLEX(DP), ALLOCATABLE :: deff_nc(:,:,:,:)
   REAL(DP), ALLOCATABLE :: deff(:,:,:)
   TYPE(bec_type) :: dbecp                 ! contains <dbeta|psi>
-  INTEGER    :: npw, ik, ipol, ig, jkb, ia
+  INTEGER    :: npw, ik, ipol, ig, jkb
   !
   forcenl(:,:) = 0.D0
-  forceus(:,:) = 0.D0
 
   if (use_sirius) then
     call sirius_get_forces(c_str("usnl"), forcenl(1,1))
-    forcenl = forcenl * 2 ! convert to Ha
-
-    call sirius_get_forces(c_str("nl"), forceus(1,1))
-    forceus = forceus * 2
-    write(*,*) "Force NL"
-    do ia=1, nat
-        write (*,*) forceus(1,ia)," ",forceus(2,ia)," ",forceus(3,ia)
-    enddo
-
-    forceus = 0.0
-    call sirius_get_forces(c_str("us"), forceus(1,1))
-    forceus = forceus * 2
-    write(*,*) "Force US"
-    do ia=1, nat
-        write (*,*) forceus(1,ia)," ",forceus(2,ia)," ",forceus(3,ia)
-    enddo
-
-
+    forcenl = forcenl * 2 ! convert to Ry
+    call symvector(nat, forcenl)
     return
   endif
 
@@ -138,24 +120,10 @@ SUBROUTINE force_us( forcenl )
   ! ... augmentation part \int V_eff Q dr, the term deriving from the 
   ! ... derivative of Q is added in the routine addusforce
   !
-  CALL addusforce( forceus )
+  CALL addusforce( forcenl )
   !
   ! ... collect contributions across pools from all k-points
   !
-
-  write(*,*) "Force NL"
-  do ia=1, nat
-    write (*,*) forcenl(1,ia)," ",forcenl(2,ia)," ",forcenl(3,ia)
-  enddo
-
-  write(*,*) "Force US"
-  do ia=1, nat
-    write (*,*) forceus(1,ia)," ",forceus(2,ia)," ",forceus(3,ia)
-  enddo
-
-
-  forcenl = forcenl + forceus
-
   CALL mp_sum( forcenl, inter_pool_comm )
   !
   ! ... Since our summation over k points was only on the irreducible 
@@ -194,7 +162,7 @@ SUBROUTINE force_us( forcenl )
                 ijkb0 = indv_ijkb0(na)
                 ! this is \sum_j q_{ij} <beta_j|psi>
                 CALL DGEMM ('N','N', nh(nt), becp%nbnd_loc, nh(nt), &
-                     1.0_dp, qq(1,1,nt), nhm, becp%r(ijkb0+1,1),&
+                     1.0_dp, qq_at(1,1,na), nhm, becp%r(ijkb0+1,1),&
                      nkb, 0.0_dp, aux, nh(nt) )
                 ! multiply by -\epsilon_n
 !$omp parallel do default(shared) private(ibnd_loc,ibnd,ih)
