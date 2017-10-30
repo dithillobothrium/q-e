@@ -135,7 +135,6 @@ subroutine setup_sirius()
      call sirius_set_so_correction(.true.)
   else
      if (noncolin) then
-        write(*,*) "We should be here"
         call sirius_set_num_mag_dims(3)
      else
         if (nspin.eq.2) then
@@ -235,7 +234,14 @@ subroutine setup_sirius()
     endif
 
     ! set non-linear core correction
-    call sirius_set_atom_type_rho_core(c_str(atm(iat)), upf(iat)%mesh, upf(iat)%rho_atc(1))
+    if (associated(upf(iat)%rho_atc)) then
+      call sirius_set_atom_type_rho_core(c_str(atm(iat)), upf(iat)%mesh, upf(iat)%rho_atc(1))
+    else
+      allocate(vloc(upf(iat)%mesh))
+      vloc = 0.d0
+      call sirius_set_atom_type_rho_core(c_str(atm(iat)), upf(iat)%mesh, vloc(1))
+      deallocate(vloc)
+    endif
 
     ! set total charge density of a free atom (to compute initial rho(r))
     call sirius_set_atom_type_rho_tot(c_str(atm(iat)), upf(iat)%mesh, upf(iat)%rho_at(1))

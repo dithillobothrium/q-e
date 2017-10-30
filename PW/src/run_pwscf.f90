@@ -50,8 +50,10 @@ SUBROUTINE run_pwscf ( exit_status )
                                qmmm_update_positions, qmmm_update_forces
   USE qexsd_module,     ONLY:   qexsd_set_status
   USE input_parameters, ONLY : use_sirius, sirius_cfg
+  USE paw_variables,      ONLY : okpaw
   USE sirius
   USE klist,            ONLY : kset_id
+  USE paw_init,           ONLY : paw_post_init
   !
   IMPLICIT NONE
   INTEGER, INTENT(OUT) :: exit_status
@@ -122,6 +124,12 @@ SUBROUTINE run_pwscf ( exit_status )
         call setup_sirius
         call sirius_stop_timer(c_str("qe|run_pwscf|setup_sirius"))
      endif
+
+#if defined(__MPI)
+     ! Cleanup PAW arrays that are only used for init
+     IF (okpaw) CALL paw_post_init() ! only parallel!
+#endif
+
      !
      ! ... electronic self-consistency or band structure calculation
      !
@@ -220,6 +228,7 @@ SUBROUTINE run_pwscf ( exit_status )
      !
      ! ... exit condition (ionic convergence) is checked here
      !
+     IF ( lmd .OR. lbfgs ) CALL add_qexsd_step(idone)
      IF ( conv_ions ) EXIT main_loop
      !
      ! ... receive new positions from MM code in QM/MM run
@@ -237,7 +246,6 @@ SUBROUTINE run_pwscf ( exit_status )
         if (.not.use_sirius) then
           CALL update_pot()
         endif
-        CALL add_qexsd_step(idone)
         !
         ! ... re-initialize atomic position-dependent quantities
         !
